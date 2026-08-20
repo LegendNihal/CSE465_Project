@@ -1,0 +1,76 @@
+# CLR-Code pipeline configuration.
+# Every step reads this file; override any value with a CLI flag.
+
+model:
+  # Name you passed to --served-model-name when starting vLLM.
+  served_name: vibethinker-3b
+  base_url: http://127.0.0.1:8000/v1
+  api_key: EMPTY
+
+# Sampling for the SOLUTION rollouts. These are the values the VibeThinker-3B
+# technical report used for benchmark evaluation -- do not change them for the
+# baseline run, or your baseline is no longer comparable to the paper's 38.6.
+sampling:
+  temperature: 1.0
+  top_p: 0.95
+  top_k: -1
+  max_tokens: 32768        # raise to 40960 if you see many length-truncations
+  n_per_request: 4         # samples per HTTP request; vLLM shares the prefill
+
+# Sampling for the CLR meta-calls (claim extraction + verification).
+# Lower temperature: we want stable, parseable structure, not diversity.
+clr_sampling:
+  temperature: 0.6
+  top_p: 0.95
+  max_tokens_extract: 3072
+  max_tokens_verify: 4096
+
+data:
+  # Path to the OJBench prompts file.
+  prompts: OJBench_testdata/prompts/full.jsonl
+  language: cpp            # cpp | python  (report says cpp is better for long-CoT models)
+  dataset: all             # all | NOI | ICPC
+  difficulty: all          # all | easy | medium | hard
+
+run:
+  K: 16                    # candidates per problem
+  M: 5                     # claims per candidate (CLR uses r = (mean verdict)^M)
+  concurrency: 24          # in-flight HTTP requests against vLLM
+  out_dir: runs/cpp_k16
+
+clr:
+  # Where claims are extracted from: code | trace | both
+  # 'code' is much cheaper (no 12k-token prefill) and the code is a faithful
+  # summary of the trajectory's decisions.
+  claims_from: code
+  # If the model fails to emit a parseable "VERDICT:" line, count the claim as
+  # TRUE. Counting it FALSE would mostly measure format compliance, not logic.
+  unparsed_verdict_true: true
+  # Retry a verification call once if the verdict cannot be parsed.
+  verify_retries: 1
+
+local_tests:
+  run_timeout_s: 6.0       # per sample test
+  mem_mb: 1024
+  compile_timeout_s: 30
+  workers: 8
+  use_generated_inputs: true   # model writes an input generator; breaks ties
+  n_generated_inputs: 6
+
+# Weights for the final candidate score.
+#   score = (r_clr ** w_clr) * ((sample_pass_frac + eps) ** w_samples)
+# Cluster score = sum of member scores. Set w_clr=0 to ablate CLR away.
+select:
+  w_clr: 1.0
+  w_samples: 2.0
+  eps: 0.05
+  hard_gate_compile: true      # never submit code that does not compile
+  hard_gate_samples: true      # never submit code that fails a parsed sample
+  n_selection_runs: 8          # repeat selection over resampled verdicts
+
+judge:
+  ojbench_testdata:
+    - OJBench_testdata/NOI
+    - OJBench_testdata/ICPC
+  num_workers: 8
+  baseline_n: 8            # how many candidates per problem to judge for the baseline
